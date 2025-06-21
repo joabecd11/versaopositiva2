@@ -1,0 +1,22 @@
+
+{
+  "name": "cloaker-analyzer-server",
+  "version": "1.0.0",
+  "description": "Sistema para análise de cloakers com simulação de navegador humano",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "playwright": "^1.40.0",
+    "cors": "^2.8.5",
+    "fs-extra": "^11.1.1",
+    "path": "^0.12.7",
+    "uuid": "^9.0.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  }
+}

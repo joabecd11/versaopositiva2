@@ -21,7 +21,8 @@ import {
   Target,
   Eye,
   ShieldCheck,
-  TrendingUp
+  TrendingUp,
+  RefreshCw
 } from 'lucide-react';
 import { toast } from 'sonner';
 import AnalysisForm from '@/components/AnalysisForm';
@@ -92,56 +93,132 @@ const Index = () => {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [serverConnected, setServerConnected] = useState<boolean | null>(null);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [retryCount, setRetryCount] = useState(0);
 
-  const SERVER_URL = 'http://localhost:3001';
+  // Try multiple possible server URLs
+  const SERVER_URLS = [
+    'http://localhost:3001',
+    'http://127.0.0.1:3001',
+    'http://0.0.0.0:3001'
+  ];
+
+  const [currentServerUrl, setCurrentServerUrl] = useState(SERVER_URLS[0]);
 
   useEffect(() => {
     checkServerConnection();
+    // Set up periodic connection checks
+    const interval = setInterval(() => {
+      if (!serverConnected) {
+        checkServerConnection();
+      }
+    }, 10000); // Check every 10 seconds if disconnected
+
+    return () => clearInterval(interval);
   }, []);
 
   const checkServerConnection = async () => {
-    try {
-      console.log('🔍 Verificando conexão com o servidor...');
-      const response = await fetch(`${SERVER_URL}/health`, {
-        method: 'GET',
-        signal: AbortSignal.timeout(5000)
-      });
-      
-      if (response.ok) {
-        setServerConnected(true);
-        console.log('✅ Servidor conectado');
-        fetchLogs();
-      } else {
-        setServerConnected(false);
-        console.error('❌ Servidor retornou erro:', response.status);
+    console.log('🔍 Verificando conexão com o servidor...');
+    setConnectionError(null);
+    
+    // Try each server URL
+    for (const serverUrl of SERVER_URLS) {
+      try {
+        console.log(`🔍 Tentando conectar em: ${serverUrl}`);
+        
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 8000);
+        
+        const response = await fetch(`${serverUrl}/health`, {
+          method: 'GET',
+          signal: controller.signal,
+          headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json'
+          }
+        });
+        
+        clearTimeout(timeoutId);
+        
+        if (response.ok) {
+          const healthData = await response.json();
+          setServerConnected(true);
+          setCurrentServerUrl(serverUrl);
+          setConnectionError(null);
+          setRetryCount(0);
+          console.log('✅ Servidor conectado em:', serverUrl);
+          console.log('📊 Status do servidor:', healthData);
+          
+          // Show success toast only on first connection or after reconnection
+          if (serverConnected === false || serverConnected === null) {
+            toast.success(`✅ Conectado ao servidor em ${serverUrl}`);
+          }
+          
+          fetchLogs();
+          return;
+        } else {
+          console.error(`❌ Servidor retornou erro ${response.status} em ${serverUrl}`);
+        }
+      } catch (error) {
+        console.error(`❌ Erro ao conectar com ${serverUrl}:`, error);
+        
+        if (error instanceof Error) {
+          if (error.name === 'AbortError') {
+            console.error('⏰ Timeout na conexão');
+          } else if (error.message.includes('fetch')) {
+            console.error('🌐 Erro de rede ou CORS');
+          }
+        }
       }
-    } catch (error) {
-      setServerConnected(false);
-      console.error('❌ Erro ao conectar com servidor:', error);
+    }
+    
+    // If we get here, all URLs failed
+    setServerConnected(false);
+    setRetryCount(prev => prev + 1);
+    
+    const errorMsg = `Não foi possível conectar ao servidor backend. Tentativas: ${retryCount + 1}`;
+    setConnectionError(errorMsg);
+    console.error('❌ Falha em todas as tentativas de conexão');
+    
+    // Show error toast only on first failure or every 5th retry
+    if (serverConnected === true || retryCount % 5 === 0) {
+      toast.error('❌ Servidor backend não está acessível');
     }
   };
 
   const fetchLogs = async () => {
-    if (!serverConnected) return;
+    if (!serverConnected || !currentServerUrl) return;
     
     try {
       console.log('📋 Buscando logs...');
-      const response = await fetch(`${SERVER_URL}/logs`, {
-        signal: AbortSignal.timeout(10000)
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
+      
+      const response = await fetch(`${currentServerUrl}/logs`, {
+        signal: controller.signal,
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json'
+        }
       });
+      
+      clearTimeout(timeoutId);
+      
       if (response.ok) {
         const logsData = await response.json();
         setLogs(logsData);
         console.log('📋 Logs carregados:', logsData.length);
+      } else {
+        console.error('❌ Erro ao buscar logs:', response.status);
       }
     } catch (error) {
-      console.error('Erro ao buscar logs:', error);
+      console.error('❌ Erro ao buscar logs:', error);
     }
   };
 
   const analyzeUrl = async (url: string, config: any) => {
-    if (!serverConnected) {
-      toast.error('Servidor não está conectado. Verifique se está rodando na porta 3001');
+    if (!serverConnected || !currentServerUrl) {
+      toast.error('❌ Servidor não está conectado. Verifique se está rodando na porta 3001');
       return;
     }
 
@@ -152,22 +229,35 @@ const Index = () => {
     try {
       console.log('🚀 Iniciando análise da URL:', url);
       console.log('⚙️ Configurações:', config);
+      console.log('🌐 Usando servidor:', currentServerUrl);
       
-      const response = await fetch(`${SERVER_URL}/analyze`, {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 minutes timeout
+      
+      const response = await fetch(`${currentServerUrl}/analyze`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'Accept': 'application/json'
         },
         body: JSON.stringify({ 
           url: url.trim(),
           config: config
         }),
-        signal: AbortSignal.timeout(90000) // 90 segundos para análise completa
+        signal: controller.signal
       });
 
+      clearTimeout(timeoutId);
+
       if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Erro ${response.status}: ${errorText}`);
+        let errorMessage = `Erro ${response.status}`;
+        try {
+          const errorData = await response.json();
+          errorMessage = errorData.error || errorData.message || errorMessage;
+        } catch {
+          errorMessage = await response.text() || errorMessage;
+        }
+        throw new Error(errorMessage);
       }
 
       const analysisResult = await response.json();
@@ -185,23 +275,40 @@ const Index = () => {
       
       console.log('✅ Análise concluída:', analysisResult.sessionId);
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Erro desconhecido';
+      let errorMessage = 'Erro desconhecido';
+      
+      if (error instanceof Error) {
+        if (error.name === 'AbortError') {
+          errorMessage = 'Timeout na análise (2 minutos). Tente novamente.';
+        } else {
+          errorMessage = error.message;
+        }
+      }
+      
       setError(errorMessage);
-      toast.error(`Erro na análise: ${errorMessage}`);
+      toast.error(`❌ Erro na análise: ${errorMessage}`);
       console.error('❌ Erro na análise:', error);
+      
+      // Check if server is still connected after error
+      setTimeout(checkServerConnection, 1000);
     } finally {
       setLoading(false);
     }
   };
 
   const downloadFile = async (sessionId: string, type: 'json' | 'html' | 'screenshot') => {
-    if (!serverConnected) {
-      toast.error('Servidor não conectado');
+    if (!serverConnected || !currentServerUrl) {
+      toast.error('❌ Servidor não conectado');
       return;
     }
 
     try {
-      const response = await fetch(`${SERVER_URL}/download/${sessionId}/${type}`);
+      const response = await fetch(`${currentServerUrl}/download/${sessionId}/${type}`, {
+        headers: {
+          'Accept': '*/*'
+        }
+      });
+      
       if (response.ok) {
         const blob = await response.blob();
         const url = window.URL.createObjectURL(blob);
@@ -212,12 +319,13 @@ const Index = () => {
         a.click();
         window.URL.revokeObjectURL(url);
         document.body.removeChild(a);
-        toast.success(`Download do ${type} iniciado!`);
+        toast.success(`✅ Download do ${type} iniciado!`);
       } else {
-        toast.error('Erro no download');
+        toast.error('❌ Erro no download');
       }
     } catch (error) {
-      toast.error('Erro no download');
+      console.error('❌ Erro no download:', error);
+      toast.error('❌ Erro no download');
     }
   };
 
@@ -284,12 +392,16 @@ const Index = () => {
                 ) : serverConnected ? (
                   <>
                     <CheckCircle className="h-4 w-4 text-green-600" />
-                    <span className="text-sm text-green-600">Servidor conectado (BrightData Premium API)</span>
+                    <span className="text-sm text-green-600">
+                      Servidor conectado em {currentServerUrl} (BrightData Premium API)
+                    </span>
                   </>
                 ) : (
                   <>
                     <WifiOff className="h-4 w-4 text-red-600" />
-                    <span className="text-sm text-red-600">Servidor desconectado</span>
+                    <span className="text-sm text-red-600">
+                      Servidor desconectado {retryCount > 0 && `(${retryCount} tentativas)`}
+                    </span>
                   </>
                 )}
               </div>
@@ -299,6 +411,7 @@ const Index = () => {
                 onClick={checkServerConnection}
                 disabled={serverConnected === null}
               >
+                <RefreshCw className="h-4 w-4 mr-1" />
                 Verificar Conexão
               </Button>
             </div>
@@ -307,12 +420,43 @@ const Index = () => {
               <Alert variant="destructive" className="mt-4">
                 <AlertTriangle className="h-4 w-4" />
                 <AlertDescription>
-                  <div className="space-y-2">
-                    <p>O servidor backend não está rodando. Para iniciar:</p>
-                    <div className="bg-black text-green-400 p-2 rounded font-mono text-xs">
-                      cd server<br/>
-                      npm install<br/>
-                      npm start
+                  <div className="space-y-3">
+                    <p><strong>O servidor backend não está acessível.</strong></p>
+                    
+                    {connectionError && (
+                      <p className="text-sm">{connectionError}</p>
+                    )}
+                    
+                    <div className="space-y-2">
+                      <p className="font-medium">Para iniciar o servidor:</p>
+                      <div className="bg-black text-green-400 p-3 rounded font-mono text-sm">
+                        <div># Opção 1: Usar o script de inicialização</div>
+                        <div>./start.sh</div>
+                        <div className="mt-2"># Opção 2: Iniciar manualmente</div>
+                        <div>cd server</div>
+                        <div>npm install</div>
+                        <div>npm start</div>
+                      </div>
+                    </div>
+                    
+                    <div className="space-y-1 text-sm">
+                      <p><strong>URLs testadas:</strong></p>
+                      {SERVER_URLS.map(url => (
+                        <div key={url} className="flex items-center space-x-2">
+                          <span className="w-2 h-2 bg-red-500 rounded-full"></span>
+                          <span className="font-mono">{url}</span>
+                        </div>
+                      ))}
+                    </div>
+                    
+                    <div className="text-sm space-y-1">
+                      <p><strong>Possíveis causas:</strong></p>
+                      <ul className="list-disc list-inside space-y-1 ml-2">
+                        <li>Servidor backend não foi iniciado</li>
+                        <li>Porta 3001 está sendo usada por outro processo</li>
+                        <li>Firewall ou antivírus bloqueando a conexão</li>
+                        <li>Dependências do Node.js não instaladas</li>
+                      </ul>
                     </div>
                   </div>
                 </AlertDescription>
@@ -332,7 +476,18 @@ const Index = () => {
         {error && (
           <Alert variant="destructive">
             <AlertTriangle className="h-4 w-4" />
-            <AlertDescription>{error}</AlertDescription>
+            <AlertDescription>
+              <div className="space-y-2">
+                <p><strong>Erro na análise:</strong></p>
+                <p>{error}</p>
+                {error.includes('Timeout') && (
+                  <p className="text-sm">
+                    <strong>Dica:</strong> Análises podem demorar até 2 minutos. 
+                    Verifique se a URL está acessível e tente novamente.
+                  </p>
+                )}
+              </div>
+            </AlertDescription>
           </Alert>
         )}
 
